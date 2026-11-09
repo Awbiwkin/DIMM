@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>title</key>
+    <string>Device Identity Manager</string>
+
+    <key>items</key>
+    <array>
+
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>GENERAL</string>
+        </dict>
+
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>label</key>
+            <string>Enable DIM</string>
+            <key>key</key>
+            <string>Enabled</string>
+            <key>default</key>
+            <true/>
+            <key>defaults</key>
+            <string>com.dim.manager</string>
+        </dict>
+
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>MODULES</string>
+        </dict>
+
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>label</key>
+            <string>Device Identity</string>
+            <key>key</key>
+            <string>DeviceEnabled</string>
+            <key>default</key>
+            <false/>
+            <key>defaults</key>
+            <string>com.dim.manager</string>
+        </dict>
+
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>label</key>
+            <string>GPS Spoofing</string>
+            <key>key</key>
+            <string>GPSEnabled</string>
+            <key>default</key>
+            <false/>
+            <key>defaults</key>
+            <string>com.dim.manager</string>
+        </dict>
+
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>label</key>
+            <string>SIM Status</string>
+            <key>key</key>
+            <string>SIMEnabled</string>
+            <key>default</key>
+            <false/>
+            <key>defaults</key>
+            <string>com.dim.manager</string>
+        </dict>
+
+        <dict>
+            <key>cell</key>
+            <string>PSSwitchCell</string>
+            <key>label</key>
+            <string>Network Status</string>
+            <key>key</key>
+            <string>NetworkEnabled</string>
+            <key>default</key>
+            <false/>
+            <key>defaults</key>
+            <string>com.dim.manager</string>
+        </dict>
+
+        <dict>
+            <key>cell</key>
+            <string>PSGroupCell</string>
+            <key>label</key>
+            <string>DEVICE</string>
+        </dict>
+
+        <dict>
+            <key>cell</key>
+            <string>PSLinkCell</string>
+            <key>label</key>
+            <string>Configure Device Identity</string>
+            <key>detail</key>
+            <string>DIMDeviceListController</string>
+        </dict>
+
+    </array>
+</dict>
+</plist>
