@@ -1,3 +1,4 @@
+
 #import <UIKit/UIKit.h>
 #import <Preferences/PSListController.h>
 #import <Preferences/PSSpecifier.h>
@@ -16,28 +17,22 @@ static NSString * const DIMDomain = @"com.dim.manager";
 
 - (NSString *)labelForSpecifier:(PSSpecifier *)specifier {
     NSString *label = [specifier propertyForKey:@"label"];
-
     if (![label isKindOfClass:NSString.class] || !label.length) {
         label = [specifier name];
     }
-
     return [label isKindOfClass:NSString.class] ? label : @"";
 }
 
 - (NSArray *)specifiers {
-    if (_specifiers) {
-        return _specifiers;
-    }
+    if (_specifiers) return _specifiers;
 
-    NSArray *allSpecifiers =
-        [self loadSpecifiersFromPlistName:@"Root"
-                                   target:self];
+    NSArray *all =
+        [self loadSpecifiersFromPlistName:@"Root" target:self];
 
     NSUserDefaults *defaults = [self prefs];
 
     BOOL dimEnabled = YES;
-
-    if ([defaults objectForKey:@"Enabled"] != nil) {
+    if ([defaults objectForKey:@"Enabled"]) {
         dimEnabled = [defaults boolForKey:@"Enabled"];
     }
 
@@ -45,35 +40,26 @@ static NSString * const DIMDomain = @"com.dim.manager";
 
     NSMutableArray *filtered = [NSMutableArray array];
 
-    for (PSSpecifier *specifier in allSpecifiers) {
+    for (PSSpecifier *specifier in all) {
         NSString *key = [specifier propertyForKey:@"key"];
         NSString *label = [self labelForSpecifier:specifier];
 
-        // Главный переключатель и GENERAL показываются всегда.
         if ([key isEqualToString:@"Enabled"] ||
             [label isEqualToString:@"GENERAL"]) {
             [filtered addObject:specifier];
             continue;
         }
 
-        // Если DIM выключен — больше ничего не показываем.
-        if (!dimEnabled) {
-            continue;
-        }
+        if (!dimEnabled) continue;
 
-        // Группа DEVICE и ссылка на её настройки
-        // должны появляться только при включённом Device Identity.
         if ([label isEqualToString:@"DEVICE"] ||
             [label isEqualToString:@"Configure Device Identity"]) {
-
             if (deviceEnabled) {
                 [filtered addObject:specifier];
             }
-
             continue;
         }
 
-        // Все остальные модули остаются видимыми.
         [filtered addObject:specifier];
     }
 
@@ -83,10 +69,8 @@ static NSString * const DIMDomain = @"com.dim.manager";
 
 - (void)setPreferenceValue:(id)value
                  specifier:(PSSpecifier *)specifier {
-
     [super setPreferenceValue:value specifier:specifier];
 
-    // Явно пишем значение в тот же домен и обновляем runtime plist для твика.
     NSString *key = [specifier propertyForKey:@"key"];
 
     if (key.length && value) {
