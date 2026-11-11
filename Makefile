@@ -7,7 +7,11 @@ INSTALL_TARGET_PROCESSES = SpringBoard
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = DIMCore
-DIMCore_FILES = Tweak.xm
+
+DIMCore_FILES = \
+    Tweak.xm \
+    DIMSIMStatus.xm
+
 DIMCore_CFLAGS = -fobjc-arc
 DIMCore_FRAMEWORKS = UIKit
 DIMCore_LIBRARIES = substrate
