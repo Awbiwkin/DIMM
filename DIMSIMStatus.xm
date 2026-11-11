@@ -2,13 +2,12 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/message.h>
+#import <objc/runtime.h>
 #import <notify.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <dispatch/dispatch.h>
 #import <string.h>
 #import <stdlib.h>
-
-#import <stdbool.h>
 
 #define DIM_SIM_NOTIFY "com.dim.manager.changed"
 
@@ -110,21 +109,24 @@ typedef struct {
     DIMStatusBarRawData values;
 } DIMStatusBarOverrideData;
 
-static BOOL gDIMSIMEnabled = NO;
-static BOOL gDIMDynamic = NO;
-static int gDIMSignal = 4;
-static int gDIMCurrentSignal = 4;
-static NSString *gDIMCarrier = nil;
-static BOOL gDIMInitialized = NO;
+static BOOL gEnabled = NO;
+static BOOL gDynamic = NO;
+static NSInteger gStrength = 4;
+static NSString *gCarrier = nil;
+static NSString *gCountry = nil;
+static BOOL gInitialized = NO;
+static int gNotifyToken = 0;
+static dispatch_source_t gTimer = nil;
+static BOOL gOverrideApplied = NO;
 
-typedef DIMStatusBarOverrideData *(*DIMGetOverridesFn)(id, SEL);
-typedef void (*DIMPostOverridesFn)(id, SEL, DIMStatusBarOverrideData *);
+typedef DIMStatusBarOverrideData *(*DIMGetFn)(id, SEL);
+typedef void (*DIMPostFn)(id, SEL, DIMStatusBarOverrideData *);
 
-static Class DIMStatusClass(void) {
+static Class DIMServer(void) {
     return objc_getClass("UIStatusBarServer");
 }
 
-static BOOL DIMLoadConfig(void) {
+static NSDictionary *DIMReadRuntime(void) {
     CFPropertyListRef value = CFPreferencesCopyValue(
         CFSTR("Runtime"),
         CFSTR("com.dim.manager"),
@@ -132,23 +134,17 @@ static BOOL DIMLoadConfig(void) {
         kCFPreferencesAnyHost
     );
 
-    if (!value) {
-        value = CFPreferencesCopyValue(
-            CFSTR("Runtime"),
-            CFSTR("com.dim.manager"),
-            kCFPreferencesAnyUser,
-            kCFPreferencesAnyHost
-        );
-    }
+    if (!value) return nil;
 
-    NSDictionary *runtime = nil;
+    id object = CFBridgingRelease(value);
 
-    if (value) {
-        id object = CFBridgingRelease(value);
-        if ([object isKindOfClass:NSDictionary.class]) {
-            runtime = object;
-        }
-    }
+    if (![object isKindOfClass:NSDictionary.class]) return nil;
+
+    return object;
+}
+
+static BOOL DIMLoadConfig(void) {
+    NSDictionary *runtime = DIMReadRuntime();
 
     if (!runtime) {
         NSArray *paths = @[
@@ -160,11 +156,6 @@ static BOOL DIMLoadConfig(void) {
             NSDictionary *file =
                 [NSDictionary dictionaryWithContentsOfFile:path];
 
-            if ([file[@"Runtime"] isKindOfClass:NSDictionary.class]) {
-                runtime = file[@"Runtime"];
-                break;
-            }
-
             if ([file[@"SIM"] isKindOfClass:NSDictionary.class]) {
                 runtime = file;
                 break;
@@ -175,51 +166,56 @@ static BOOL DIMLoadConfig(void) {
     NSDictionary *sim = runtime[@"SIM"];
 
     if (![sim isKindOfClass:NSDictionary.class]) {
-        gDIMSIMEnabled = NO;
+        gEnabled = NO;
         return NO;
     }
 
-    gDIMSIMEnabled = [sim[@"Enabled"] boolValue];
+    gEnabled = [sim[@"Enabled"] boolValue];
 
     NSString *mode = sim[@"SignalMode"];
-    gDIMDynamic = [mode isKindOfClass:NSString.class] &&
-                  [mode caseInsensitiveCompare:@"Dynamic"] == NSOrderedSame;
+    gDynamic = [mode isKindOfClass:NSString.class] &&
+        [mode caseInsensitiveCompare:@"Dynamic"] == NSOrderedSame;
 
-    gDIMSignal = [sim[@"SignalStrength"] respondsToSelector:@selector(intValue)]
-        ? [sim[@"SignalStrength"] intValue] : 4;
-
-    gDIMSignal = MAX(1, MIN(4, gDIMSignal));
+    gStrength = [sim[@"SignalStrength"] integerValue];
+    gStrength = MAX(1, MIN(4, gStrength ?: 4));
 
     NSString *carrier = sim[@"CarrierName"];
+    NSString *country = sim[@"CarrierCountry"];
 
-    gDIMCarrier = ([carrier isKindOfClass:NSString.class] && carrier.length)
+    gCarrier = ([carrier isKindOfClass:NSString.class] && carrier.length)
         ? [carrier copy] : @"DIM";
+
+    gCountry = ([country isKindOfClass:NSString.class] && country.length)
+        ? [country copy] : @"";
 
     return YES;
 }
 
-static void DIMApplySignal(int strength) {
-    Class cls = DIMStatusClass();
+static void DIMCancelTimer(void) {
+    if (gTimer) {
+        dispatch_source_cancel(gTimer);
+        gTimer = nil;
+    }
+}
+
+static void DIMApply(NSInteger strength) {
+    Class cls = DIMServer();
+
     if (!cls) {
         NSLog(@"[DIM SIM] UIStatusBarServer unavailable");
         return;
     }
 
-    SEL getSelector = sel_registerName("getStatusBarOverrideData");
-    SEL postSelector = sel_registerName("postStatusBarOverrideData:");
-    SEL permanentSelector = sel_registerName("permanentizeStatusBarOverrideData");
-
-    DIMGetOverridesFn getOverrides =
-        (DIMGetOverridesFn)objc_msgSend;
-
-    DIMPostOverridesFn postOverrides =
-        (DIMPostOverridesFn)objc_msgSend;
+    SEL getSel = sel_registerName("getStatusBarOverrideData");
+    SEL postSel = sel_registerName("postStatusBarOverrideData:");
+    SEL permanentSel =
+        sel_registerName("permanentizeStatusBarOverrideData");
 
     DIMStatusBarOverrideData *current =
-        getOverrides(cls, getSelector);
+        ((DIMGetFn)objc_msgSend)(cls, getSel);
 
     if (!current) {
-        NSLog(@"[DIM SIM] Could not get status bar overrides");
+        NSLog(@"[DIM SIM] Could not get override data");
         return;
     }
 
@@ -227,18 +223,20 @@ static void DIMApplySignal(int strength) {
 
     strength = MAX(1, MIN(4, strength));
 
+    // CellularSignalStrengthStatusBarItem = 4
     data.overrideGsmSignalStrengthBars = 1;
-    data.values.gsmSignalStrengthBars = strength;
+    data.values.gsmSignalStrengthBars = (int)strength;
 
     data.overrideItemIsEnabled[4] = 1;
     data.values.itemIsEnabled[4] = 1;
 
+    // CellularServiceStatusBarItem = 6
     data.overrideItemIsEnabled[6] = 1;
     data.values.itemIsEnabled[6] = 1;
 
     data.overrideServiceString = 1;
 
-    const char *carrier = (gDIMCarrier ?: @"DIM").UTF8String;
+    const char *carrier = (gCarrier ?: @"DIM").UTF8String;
 
     strlcpy(data.values.serviceString, carrier,
             sizeof(data.values.serviceString));
@@ -246,29 +244,30 @@ static void DIMApplySignal(int strength) {
     strlcpy(data.values.serviceCrossfadeString, carrier,
             sizeof(data.values.serviceCrossfadeString));
 
-    postOverrides(cls, postSelector, &data);
+    ((DIMPostFn)objc_msgSend)(cls, postSel, &data);
 
-    if ([cls respondsToSelector:permanentSelector]) {
-        ((void (*)(id, SEL))objc_msgSend)(cls, permanentSelector);
+    if ([cls respondsToSelector:permanentSel]) {
+        ((void (*)(id, SEL))objc_msgSend)(cls, permanentSel);
     }
 
-    gDIMCurrentSignal = strength;
+    gOverrideApplied = YES;
 
-    NSLog(@"[DIM SIM] Applied: %@, signal %d/4",
-          gDIMCarrier, strength);
+    NSLog(@"[DIM SIM] %@ %@ signal=%ld/4",
+          gCountry, gCarrier, (long)strength);
 }
 
-static void DIMDisableSignal(void) {
-    Class cls = DIMStatusClass();
-    if (!cls) return;
+static void DIMDisable(void) {
+    Class cls = DIMServer();
 
-    SEL getSelector = sel_registerName("getStatusBarOverrideData");
-    SEL postSelector = sel_registerName("postStatusBarOverrideData:");
-    SEL permanentSelector =
+    if (!cls || !gOverrideApplied) return;
+
+    SEL getSel = sel_registerName("getStatusBarOverrideData");
+    SEL postSel = sel_registerName("postStatusBarOverrideData:");
+    SEL permanentSel =
         sel_registerName("permanentizeStatusBarOverrideData");
 
     DIMStatusBarOverrideData *current =
-        ((DIMGetOverridesFn)objc_msgSend)(cls, getSelector);
+        ((DIMGetFn)objc_msgSend)(cls, getSel);
 
     if (!current) return;
 
@@ -279,71 +278,93 @@ static void DIMDisableSignal(void) {
     data.overrideItemIsEnabled[6] = 0;
     data.overrideServiceString = 0;
 
-    ((DIMPostOverridesFn)objc_msgSend)(cls, postSelector, &data);
+    ((DIMPostFn)objc_msgSend)(cls, postSel, &data);
 
-    if ([cls respondsToSelector:permanentSelector]) {
-        ((void (*)(id, SEL))objc_msgSend)(cls, permanentSelector);
+    if ([cls respondsToSelector:permanentSel]) {
+        ((void (*)(id, SEL))objc_msgSend)(cls, permanentSel);
     }
 
-    NSLog(@"[DIM SIM] Overrides disabled");
+    gOverrideApplied = NO;
+    NSLog(@"[DIM SIM] Disabled");
 }
 
 static void DIMScheduleDynamic(void);
 
-static void DIMDynamicDrop(void) {
-    if (!gDIMSIMEnabled || !gDIMDynamic) return;
+static void DIMDynamicTick(void) {
+    if (!gEnabled || !gDynamic) return;
 
-    int reduced = (arc4random_uniform(8) == 0) ? 2 : 3;
+    // 1 из 8 циклов опускается до 2 полосок,
+    // остальные — до 3. Затем возвращается к 4.
+    NSInteger reduced =
+        arc4random_uniform(8) == 0 ? 2 : 3;
 
-    DIMApplySignal(reduced);
-
-    int duration = 8 + (int)arc4random_uniform(13);
+    DIMApply(reduced);
 
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW,
-                      (int64_t)duration * NSEC_PER_SEC),
+                      (int64_t)(8 + arc4random_uniform(13)) *
+                      NSEC_PER_SEC),
         dispatch_get_main_queue(), ^{
-            if (gDIMSIMEnabled && gDIMDynamic) {
-                DIMApplySignal(4);
-                DIMScheduleDynamic();
-            }
+            if (!gEnabled || !gDynamic) return;
+
+            DIMApply(4);
+            DIMScheduleDynamic();
         }
     );
 }
 
 static void DIMScheduleDynamic(void) {
-    if (!gDIMSIMEnabled || !gDIMDynamic) return;
+    if (!gEnabled || !gDynamic) return;
 
-    int delay = 1800 + (int)arc4random_uniform(3600);
+    DIMCancelTimer();
 
-    dispatch_after(
-        dispatch_time(DISPATCH_TIME_NOW,
-                      (int64_t)delay * NSEC_PER_SEC),
-        dispatch_get_main_queue(), ^{
-            DIMDynamicDrop();
-        }
+    gTimer = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER,
+        0,
+        0,
+        dispatch_get_main_queue()
     );
+
+    uint64_t delay =
+        (uint64_t)(1800 + arc4random_uniform(3600)) * NSEC_PER_SEC;
+
+    dispatch_source_set_timer(
+        gTimer,
+        dispatch_time(DISPATCH_TIME_NOW, delay),
+        DISPATCH_TIME_FOREVER,
+        1 * NSEC_PER_SEC
+    );
+
+    dispatch_source_set_event_handler(gTimer, ^{
+        dispatch_source_t old = gTimer;
+        gTimer = nil;
+        if (old) dispatch_source_cancel(old);
+
+        DIMDynamicTick();
+    });
+
+    dispatch_resume(gTimer);
 }
 
 static void DIMRefresh(void) {
+    DIMCancelTimer();
     DIMLoadConfig();
 
-    if (!gDIMSIMEnabled) {
-        DIMDisableSignal();
+    if (!gEnabled) {
+        DIMDisable();
         return;
     }
 
-    if (gDIMDynamic) {
-        DIMApplySignal(4);
+    if (gDynamic) {
+        DIMApply(4);
         DIMScheduleDynamic();
     } else {
-        DIMApplySignal(gDIMSignal);
+        DIMApply(gStrength);
     }
 }
 
-static void DIMSIMInitialize(void) {
-    if (gDIMInitialized) return;
-    gDIMInitialized = YES;
+static void DIMInitialize(void) {
+    if (gInitialized) return;
 
     NSString *bundle = NSBundle.mainBundle.bundleIdentifier;
 
@@ -351,16 +372,16 @@ static void DIMSIMInitialize(void) {
         return;
     }
 
+    gInitialized = YES;
+
     dispatch_async(dispatch_get_main_queue(), ^{
         DIMRefresh();
 
-        int token = 0;
-
         notify_register_dispatch(
             DIM_SIM_NOTIFY,
-            &token,
+            &gNotifyToken,
             dispatch_get_main_queue(),
-            ^(int observer) {
+            ^(int token) {
                 DIMRefresh();
             }
         );
@@ -370,6 +391,6 @@ static void DIMSIMInitialize(void) {
 __attribute__((constructor))
 static void DIMSIMConstructor(void) {
     @autoreleasepool {
-        DIMSIMInitialize();
+        DIMInitialize();
     }
 }
