@@ -61,7 +61,7 @@ static NSString * const DIMSIMDomain = @"com.dim.manager";
         set:@selector(setValue:specifier:)
         get:@selector(readValue:)
         detail:nil
-        cell:PSListItemsCell
+        cell:PSListItemCell
         edit:nil];
 
     [s setProperty:key forKey:@"key"];
