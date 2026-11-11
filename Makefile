@@ -24,7 +24,8 @@ DIMPreferences_FILES = \
     DIMRootListController.m \
     DIMDeviceListController.m \
     DIMCatalogManager.m \
-    DIMAppProfilesController.m
+    DIMAppProfilesController.m \
+    DIMSIMStatusController.m
 
 DIMPreferences_CFLAGS = -fobjc-arc
 DIMPreferences_FRAMEWORKS = UIKit
