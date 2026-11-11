@@ -1,17 +1,3 @@
-// Общий код для настроек (Settings) и твика.
-//
-// Почему нужен отдельный файл: твик загружается в ЧУЖИЕ приложения (Telegram и т.д.),
-// которые работают в песочнице и не могут надёжно читать NSUserDefaults другого домена.
-//
-// ВАЖНО (v0.3.2): раньше конфиг писался только обычным файлом в
-// /var/mobile/Library/Preferences/. Песочница App Store приложений (Telegram, Discord,
-// AIDA64) запрещает прямое чтение этого пути, поэтому твик внутри таких приложений
-// вообще не видел профиль и молча выходил — устройство оставалось оригинальным,
-// а Check не получал ни одного beacon'а.
-//
-// Теперь конфиг дополнительно лежит в самом домене com.dim.manager ("Runtime"),
-// и приложения читают его через cfprefsd (sandbox-safe). Файл остаётся резервным
-// каналом для отладки и окружений без песочницы.
 
 #import <Foundation/Foundation.h>
 #import <notify.h>
@@ -22,7 +8,14 @@
 #define DIM_RUNTIME_PATH @"/var/mobile/Library/Preferences/com.dim.manager.runtime.plist"
 #define DIM_RUNTIME_CHANGED "com.dim.manager.changed"
 
-// FNV-1a 64 бит: используется для проверки "что реально видит приложение".
+// SIM Status preference keys
+#define DIM_SIM_ENABLED_KEY @"SIMEnabled"
+#define DIM_SIM_MODE_KEY @"SIMSignalMode"
+#define DIM_SIM_STRENGTH_KEY @"SIMSignalStrength"
+#define DIM_SIM_CARRIER_KEY @"SIMCarrierName"
+#define DIM_SIM_COUNTRY_KEY @"SIMCarrierCountry"
+
+// FNV-1a 64 bit
 static inline uint64_t DIMFNV1a(const char *string) {
     uint64_t hash = 1469598103934665603ULL;
 
@@ -34,37 +27,75 @@ static inline uint64_t DIMFNV1a(const char *string) {
     return hash;
 }
 
-// Менеджер -> runtime-конфиг. Вызывается после любого изменения настроек.
+// Менеджер -> runtime-конфиг
 static inline void DIMWriteRuntime(NSUserDefaults *prefs) {
     if (!prefs) return;
 
     NSMutableDictionary *config = [NSMutableDictionary dictionary];
 
+    // GENERAL
     config[@"Enabled"] =
-        @([prefs objectForKey:@"Enabled"] ? [prefs boolForKey:@"Enabled"] : YES);
+        @([prefs objectForKey:@"Enabled"]
+            ? [prefs boolForKey:@"Enabled"] : YES);
+
+    // DEVICE IDENTITY
     config[@"DeviceEnabled"] = @([prefs boolForKey:@"DeviceEnabled"]);
     config[@"Global"] = @([prefs boolForKey:@"GlobalProfileEnabled"]);
     config[@"OnlyIn"] = @([prefs boolForKey:@"OnlyInEnabled"]);
 
     NSArray *apps = [prefs arrayForKey:@"SelectedApps"];
-    config[@"Apps"] = [apps isKindOfClass:[NSArray class]] ? apps : @[];
+    config[@"Apps"] =
+        [apps isKindOfClass:[NSArray class]] ? apps : @[];
 
     NSDictionary *profile = [prefs dictionaryForKey:@"ActiveProfile"];
-    config[@"Profile"] = [profile isKindOfClass:[NSDictionary class]] ? profile : @{};
+    config[@"Profile"] =
+        [profile isKindOfClass:[NSDictionary class]] ? profile : @{};
 
-    // Основной канал: тот же домен, что и настройки.
-    // Читается из приложений через cfprefsd -> песочница не мешает.
+    // SIM STATUS
+    NSMutableDictionary *sim = [NSMutableDictionary dictionary];
+
+    sim[@"Enabled"] = @([prefs boolForKey:DIM_SIM_ENABLED_KEY]);
+
+    NSString *signalMode = [prefs stringForKey:DIM_SIM_MODE_KEY];
+    if (![signalMode isKindOfClass:[NSString class]] ||
+        !signalMode.length) {
+        signalMode = @"Static";
+    }
+    sim[@"SignalMode"] = signalMode;
+
+    NSInteger signalStrength =
+        [prefs objectForKey:DIM_SIM_STRENGTH_KEY]
+            ? [prefs integerForKey:DIM_SIM_STRENGTH_KEY] : 4;
+
+    signalStrength = MAX(1, MIN(4, signalStrength));
+    sim[@"SignalStrength"] = @(signalStrength);
+
+    NSString *carrierName = [prefs stringForKey:DIM_SIM_CARRIER_KEY];
+    if (![carrierName isKindOfClass:[NSString class]]) {
+        carrierName = @"";
+    }
+    sim[@"CarrierName"] = carrierName;
+
+    NSString *carrierCountry = [prefs stringForKey:DIM_SIM_COUNTRY_KEY];
+    if (![carrierCountry isKindOfClass:[NSString class]]) {
+        carrierCountry = @"";
+    }
+    sim[@"CarrierCountry"] = carrierCountry;
+
+    config[@"SIM"] = [sim copy];
+
+    // Основной канал: cfprefsd
     [prefs setObject:config forKey:DIM_RUNTIME_KEY];
     [prefs synchronize];
 
-    // Резервный канал: обычный файл (из песочницы может не записаться, это не критично).
+    // Резервный файл
     [config writeToFile:DIM_RUNTIME_PATH atomically:YES];
 
-    // Запущенные приложения перечитывают конфиг сразу, без перезапуска.
+    // Уведомляем запущенные приложения
     notify_post(DIM_RUNTIME_CHANGED);
 }
 
-// Что записано в runtime сейчас (для диагностики в настройках).
+// Диагностика runtime
 static inline NSString *DIMDescribeRuntime(NSUserDefaults *prefs) {
     NSMutableArray *sources = [NSMutableArray array];
 
@@ -72,14 +103,16 @@ static inline NSString *DIMDescribeRuntime(NSUserDefaults *prefs) {
         [sources addObject:@"prefs"];
     }
 
-    if ([[NSFileManager defaultManager] fileExistsAtPath:DIM_RUNTIME_PATH]) {
+    if ([[NSFileManager defaultManager]
+            fileExistsAtPath:DIM_RUNTIME_PATH]) {
         [sources addObject:@"file"];
     }
 
     NSString *rootless =
         [@"/var/jb" stringByAppendingString:DIM_RUNTIME_PATH];
 
-    if ([[NSFileManager defaultManager] fileExistsAtPath:rootless]) {
+    if ([[NSFileManager defaultManager]
+            fileExistsAtPath:rootless]) {
         [sources addObject:@"rootless"];
     }
 
